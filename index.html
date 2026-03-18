@@ -25,6 +25,7 @@
 
     const DAYS = ["Day 1", "Day 2", "Day 3", "Day 4", "Day 5 (Optional)"];
     const WEEKS = ["W1", "W2", "W3", "W4", "W5 (Deload)"];
+    const SHEETS_URL = "https://script.google.com/macros/s/AKfycbxrs9So7EjKeLQxtDS1dzbVRlT_dbHHj09kH0VvlQkU9_9xI72d_nBGuWVNc2ipBXoO/exec";
 
     const PROGRAM = {
       "Day 1": [
@@ -105,6 +106,7 @@
       const [weights, setWeights] = useState({});
       const [expandedCue, setExpandedCue] = useState(null);
       const [saveStatus, setSaveStatus] = useState("");
+      const [syncStatus, setSyncStatus] = useState("idle");
 
       useEffect(() => {
         try {
@@ -152,20 +154,81 @@
         return nums.length ? Math.max(...nums).toString() : null;
       };
 
+      const syncToSheets = async () => {
+        setSyncStatus("syncing");
+        const today = new Date().toISOString().split("T")[0];
+        const rows = [];
+        for (const day of DAYS) {
+          const exercises = PROGRAM[day] || [];
+          for (const ex of exercises) {
+            for (const week of WEEKS) {
+              const key = `${day}||${ex.name}`;
+              const w = weights[key]?.[week]?.weight;
+              const note = weights[key]?.[week]?.comment || "";
+              if (w) {
+                rows.push({
+                  date: today, week, day,
+                  section: ex.section, exercise: ex.name,
+                  sets: ex.sets, reps: ex.reps, weight: w, notes: note,
+                });
+              }
+            }
+          }
+        }
+        if (rows.length === 0) {
+          setSyncStatus("empty");
+          setTimeout(() => setSyncStatus("idle"), 2500);
+          return;
+        }
+        try {
+          await fetch(SHEETS_URL, {
+            method: "POST", mode: "no-cors",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ rows }),
+          });
+          setSyncStatus("ok");
+          setTimeout(() => setSyncStatus("idle"), 3000);
+        } catch (_) {
+          setSyncStatus("error");
+          setTimeout(() => setSyncStatus("idle"), 3000);
+        }
+      };
+
       const exercises = PROGRAM[activeDay] || [];
       const sections = [...new Set(exercises.map(e => e.section))];
       const workingExercises = exercises.filter(e => e.section !== "WARM UP");
       const loggedCount = workingExercises.filter(e => getVal(activeDay, e.name, "weight")).length;
 
+      const syncStyles = {
+        idle:    { bg: "#1a2a1a", border: "#22c55e44", color: "#22c55e", label: "↑ Sync to Sheets" },
+        syncing: { bg: "#1a2a1a", border: "#22c55e44", color: "#22c55e66", label: "Syncing..." },
+        ok:      { bg: "#0a2a0a", border: "#22c55e",   color: "#22c55e", label: "✓ Synced!" },
+        empty:   { bg: "#2a1a1a", border: "#dc262644", color: "#dc2626", label: "Nothing logged yet" },
+        error:   { bg: "#2a1a1a", border: "#dc262644", color: "#dc2626", label: "Sync failed" },
+      }[syncStatus];
+
       return (
         <div style={{ fontFamily: "'Barlow', sans-serif", background: "#0d0d0d", minHeight: "100vh", color: "#f0f0f0", paddingBottom: 80 }}>
+
           {/* Header */}
           <div style={{ background: "#111", borderBottom: "1px solid #222", padding: "16px 20px", display: "flex", alignItems: "center", justifyContent: "space-between", position: "sticky", top: 0, zIndex: 10 }}>
             <div>
               <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 20, fontWeight: 700, letterSpacing: "0.05em", color: "#f59e0b" }}>PHASE 1 TRACKER</div>
               <div style={{ fontSize: 11, color: "#555", marginTop: 2 }}>{loggedCount} / {workingExercises.length} working sets logged</div>
             </div>
-            {saveStatus === "saved" && <div style={{ fontSize: 11, color: "#22c55e", fontFamily: "monospace" }}>✓ saved</div>}
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              {saveStatus === "saved" && <div style={{ fontSize: 11, color: "#22c55e", fontFamily: "monospace" }}>✓ saved</div>}
+              <button onClick={syncToSheets} disabled={syncStatus === "syncing"} style={{
+                background: syncStyles.bg, border: `1px solid ${syncStyles.border}`,
+                borderRadius: 7, cursor: syncStatus === "syncing" ? "default" : "pointer",
+                padding: "7px 12px", color: syncStyles.color,
+                fontFamily: "'Barlow Condensed', sans-serif",
+                fontWeight: 600, fontSize: 12, letterSpacing: "0.04em",
+                transition: "all 0.2s", whiteSpace: "nowrap"
+              }}>
+                {syncStyles.label}
+              </button>
+            </div>
           </div>
 
           {/* Week Tabs */}
@@ -231,7 +294,7 @@
                     return (
                       <div key={ex.name} style={{
                         background: "#161616", border: `1px solid ${wVal ? "#2a2a1a" : "#1f1f1f"}`,
-                        borderRadius: 10, marginBottom: 8, overflow: "hidden",
+                        borderRadius: 10, marginBottom: 8,
                         boxShadow: wVal ? `0 0 0 1px ${color}22` : "none"
                       }}>
                         <div style={{ padding: "12px 14px" }}>
