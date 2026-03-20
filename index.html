@@ -12,6 +12,7 @@
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { background: #0d0d0d; color: #f0f0f0; font-family: 'Barlow', sans-serif; }
     input { font-family: inherit; }
+    input:disabled { opacity: 0.4; cursor: not-allowed; }
     ::-webkit-scrollbar { width: 4px; height: 4px; }
     ::-webkit-scrollbar-track { background: #111; }
     ::-webkit-scrollbar-thumb { background: #333; border-radius: 2px; }
@@ -99,11 +100,59 @@
     };
 
     const STORAGE_KEY = "phase1-tracker-v1";
+    const TYPES_KEY = "phase1-types-v1";
+
+    // Returns the weight logged in the most recent previous week
+    function getPrevWeight(weights, day, exercise, currentWeek) {
+      const weekIdx = WEEKS.indexOf(currentWeek);
+      if (weekIdx <= 0) return null;
+      for (let i = weekIdx - 1; i >= 0; i--) {
+        const w = weights[`${day}||${exercise}`]?.[WEEKS[i]]?.weight;
+        if (w) return { weight: w, week: WEEKS[i] };
+      }
+      return null;
+    }
+
+    const TYPE_OPTIONS = [
+      { id: "bb",  label: "BB",  title: "Barbell" },
+      { id: "db",  label: "DB",  title: "Dumbbell" },
+      { id: "bw",  label: "BW",  title: "Bodyweight" },
+    ];
+
+    function TypeToggle({ value, onChange }) {
+      return (
+        <div style={{ display: "flex", gap: 3 }}>
+          {TYPE_OPTIONS.map(opt => {
+            const active = value === opt.id;
+            const isBW = opt.id === "bw";
+            return (
+              <button
+                key={opt.id}
+                title={opt.title}
+                onClick={() => onChange(active ? null : opt.id)}
+                style={{
+                  background: active ? (isBW ? "#1a1a2a" : "#1a2020") : "#0d0d0d",
+                  border: `1px solid ${active ? (isBW ? "#6366f1aa" : "#22c55e88") : "#2a2a2a"}`,
+                  borderRadius: 5, cursor: "pointer", padding: "3px 7px",
+                  color: active ? (isBW ? "#818cf8" : "#4ade80") : "#444",
+                  fontFamily: "'Barlow Condensed', sans-serif",
+                  fontWeight: 700, fontSize: 11, letterSpacing: "0.06em",
+                  transition: "all 0.15s",
+                }}
+              >
+                {opt.label}
+              </button>
+            );
+          })}
+        </div>
+      );
+    }
 
     function App() {
       const [activeDay, setActiveDay] = useState("Day 1");
       const [activeWeek, setActiveWeek] = useState("W1");
       const [weights, setWeights] = useState({});
+      const [types, setTypes] = useState({});   // { "Day 1||Back Squat": "bb" | "db" | "bw" | null }
       const [expandedCue, setExpandedCue] = useState(null);
       const [saveStatus, setSaveStatus] = useState("");
       const [syncStatus, setSyncStatus] = useState("idle");
@@ -112,6 +161,8 @@
         try {
           const saved = localStorage.getItem(STORAGE_KEY);
           if (saved) setWeights(JSON.parse(saved));
+          const savedTypes = localStorage.getItem(TYPES_KEY);
+          if (savedTypes) setTypes(JSON.parse(savedTypes));
         } catch (_) {}
       }, []);
 
@@ -121,6 +172,10 @@
           setSaveStatus("saved");
           setTimeout(() => setSaveStatus(""), 1200);
         } catch (_) {}
+      }, []);
+
+      const saveTypes = useCallback((newTypes) => {
+        try { localStorage.setItem(TYPES_KEY, JSON.stringify(newTypes)); } catch (_) {}
       }, []);
 
       const handleWeight = (day, exercise, value) => {
@@ -143,16 +198,22 @@
         save(updated);
       };
 
+      const handleType = (day, exercise, typeVal) => {
+        const key = `${day}||${exercise}`;
+        const updated = { ...types, [key]: typeVal };
+        setTypes(updated);
+        saveTypes(updated);
+        // If switching to BW, clear the weight input for current week
+        if (typeVal === "bw") {
+          handleWeight(day, exercise, "");
+        }
+      };
+
       const getVal = (day, exercise, field) =>
         weights[`${day}||${exercise}`]?.[activeWeek]?.[field] || "";
 
-      const getBestWeight = (day, exercise) => {
-        const key = `${day}||${exercise}`;
-        const nums = WEEKS.filter(w => w !== activeWeek)
-          .map(w => parseFloat(weights[key]?.[w]?.weight))
-          .filter(n => !isNaN(n));
-        return nums.length ? Math.max(...nums).toString() : null;
-      };
+      const getType = (day, exercise) =>
+        types[`${day}||${exercise}`] || null;
 
       const syncToSheets = async () => {
         setSyncStatus("syncing");
@@ -165,11 +226,13 @@
               const key = `${day}||${ex.name}`;
               const w = weights[key]?.[week]?.weight;
               const note = weights[key]?.[week]?.comment || "";
+              const t = types[key] || "";
               if (w) {
                 rows.push({
                   date: today, week, day,
                   section: ex.section, exercise: ex.name,
-                  sets: ex.sets, reps: ex.reps, weight: w, notes: note,
+                  sets: ex.sets, reps: ex.reps,
+                  weight: w, type: t, notes: note,
                 });
               }
             }
@@ -197,7 +260,7 @@
       const exercises = PROGRAM[activeDay] || [];
       const sections = [...new Set(exercises.map(e => e.section))];
       const workingExercises = exercises.filter(e => e.section !== "WARM UP");
-      const loggedCount = workingExercises.filter(e => getVal(activeDay, e.name, "weight")).length;
+      const loggedCount = workingExercises.filter(e => getVal(activeDay, e.name, "weight") || getType(activeDay, e.name) === "bw").length;
 
       const syncStyles = {
         idle:    { bg: "#1a2a1a", border: "#22c55e44", color: "#22c55e", label: "↑ Sync to Sheets" },
@@ -251,7 +314,7 @@
           <div style={{ padding: "12px 16px", display: "flex", gap: 8, overflowX: "auto" }}>
             {DAYS.map(d => {
               const dayEx = PROGRAM[d] || [];
-              const logged = dayEx.filter(e => getVal(d, e.name, "weight")).length;
+              const logged = dayEx.filter(e => getVal(d, e.name, "weight") || getType(d, e.name) === "bw").length;
               return (
                 <button key={d} onClick={() => setActiveDay(d)} style={{
                   background: activeDay === d ? "#f59e0b" : "#1a1a1a",
@@ -286,41 +349,59 @@
                     <div style={{ width: 3, height: 16, background: color, borderRadius: 2 }} />
                     <span style={{ fontFamily: "'Barlow Condensed', sans-serif", fontWeight: 700, fontSize: 11, letterSpacing: "0.12em", color }}>{section}</span>
                   </div>
+
                   {sectionExercises.map(ex => {
                     const wVal = getVal(activeDay, ex.name, "weight");
                     const cVal = getVal(activeDay, ex.name, "comment");
-                    const best = getBestWeight(activeDay, ex.name);
+                    const exType = getType(activeDay, ex.name);
+                    const isBW = exType === "bw";
                     const isExpanded = expandedCue === `${activeDay}||${ex.name}`;
+                    const prev = getPrevWeight(weights, activeDay, ex.name, activeWeek);
+                    const isLogged = wVal || isBW;
+
                     return (
                       <div key={ex.name} style={{
-                        background: "#161616", border: `1px solid ${wVal ? "#2a2a1a" : "#1f1f1f"}`,
+                        background: "#161616",
+                        border: `1px solid ${isLogged ? "#2a2a1a" : "#1f1f1f"}`,
                         borderRadius: 10, marginBottom: 8,
-                        boxShadow: wVal ? `0 0 0 1px ${color}22` : "none"
+                        boxShadow: isLogged ? `0 0 0 1px ${color}22` : "none"
                       }}>
                         <div style={{ padding: "12px 14px" }}>
                           <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 8 }}>
+
+                            {/* Left: name + badges */}
                             <div style={{ flex: 1 }}>
-                              <div style={{ fontSize: 14, fontWeight: 600, color: wVal ? "#f0f0f0" : "#aaa", lineHeight: 1.3 }}>{ex.name}</div>
-                              <div style={{ display: "flex", gap: 8, marginTop: 5, flexWrap: "wrap" }}>
+                              <div style={{ fontSize: 14, fontWeight: 600, color: isLogged ? "#f0f0f0" : "#aaa", lineHeight: 1.3 }}>{ex.name}</div>
+                              <div style={{ display: "flex", gap: 6, marginTop: 6, flexWrap: "wrap", alignItems: "center" }}>
                                 <span style={{ fontSize: 11, color: "#555", background: "#1f1f1f", borderRadius: 4, padding: "2px 7px" }}>{ex.sets}×{ex.reps}</span>
                                 <span style={{ fontSize: 11, color: "#555", background: "#1f1f1f", borderRadius: 4, padding: "2px 7px" }}>RPE {ex.rpe}</span>
-                                {best && <span style={{ fontSize: 11, color: "#7a7a3a", background: "#1f1e10", borderRadius: 4, padding: "2px 7px" }}>prev: {best}kg</span>}
+                                {prev && (
+                                  <span style={{ fontSize: 11, color: "#8b8b3a", background: "#1f1e10", borderRadius: 4, padding: "2px 7px" }}>
+                                    {prev.week}: {prev.weight}{isBW ? "" : "kg"}
+                                  </span>
+                                )}
                               </div>
                             </div>
+
+                            {/* Right: type toggle + weight input */}
                             <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6 }}>
                               <input
-                                type="text" inputMode="decimal" placeholder="kg"
-                                value={wVal}
+                                type="text"
+                                inputMode="decimal"
+                                placeholder={isBW ? "BW" : "kg"}
+                                value={isBW ? "" : wVal}
+                                disabled={isBW}
                                 onChange={e => handleWeight(activeDay, ex.name, e.target.value)}
                                 style={{
-                                  width: 72, background: "#0d0d0d",
-                                  border: `1px solid ${wVal ? "#f59e0b66" : "#2a2a2a"}`,
+                                  width: 72, background: isBW ? "#111" : "#0d0d0d",
+                                  border: `1px solid ${wVal && !isBW ? "#f59e0b66" : isBW ? "#6366f133" : "#2a2a2a"}`,
                                   borderRadius: 6, padding: "6px 10px",
-                                  color: wVal ? "#f59e0b" : "#555",
+                                  color: isBW ? "#6366f1" : wVal ? "#f59e0b" : "#555",
                                   fontSize: 13, fontFamily: "'Barlow Condensed', sans-serif",
                                   fontWeight: 600, outline: "none", textAlign: "center"
                                 }}
                               />
+                              <TypeToggle value={exType} onChange={(t) => handleType(activeDay, ex.name, t)} />
                               {ex.cue && (
                                 <button onClick={() => setExpandedCue(isExpanded ? null : `${activeDay}||${ex.name}`)} style={{
                                   background: "none", border: "none", cursor: "pointer",
@@ -331,11 +412,13 @@
                               )}
                             </div>
                           </div>
+
                           {isExpanded && ex.cue && (
                             <div style={{ marginTop: 10, padding: "8px 10px", background: "#0d0d0d", borderRadius: 6, borderLeft: `2px solid ${color}`, fontSize: 12, color: "#777", lineHeight: 1.5 }}>
                               {ex.cue}
                             </div>
                           )}
+
                           <input
                             type="text" placeholder="notes..."
                             value={cVal}
